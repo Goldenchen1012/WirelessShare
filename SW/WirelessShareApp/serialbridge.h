@@ -30,13 +30,17 @@ signals:
 private slots:
     void readAvailable();
     void serialError(QSerialPort::SerialPortError error);
+    void sendConfiguration();
 
 private:
     bool writeFrame(quint8 type, const QByteArray &payload);
     void processStatus(const QByteArray &payload);
 
     QSerialPort m_port;
+    QTimer *m_configTimer;
     QByteArray m_receiveBuffer;
+    QByteArray m_configPayload;
+    quint8 m_expectedRole = 0;
 };
 
 #endif // SERIALBRIDGE_H

@@ -175,7 +175,7 @@ bool MainWindow::connectDevice(bool quiet)
                         password))
         return false;
     ui->connectButton->setText(tr("中斷"));
-    ui->statusLabel->setText(tr("USB 已連接，正在建立 Wi-Fi 連線…"));
+    ui->statusLabel->setText(tr("USB 已連接，正在等待裝置回應…"));
     ui->portCombo->setEnabled(false);
     ui->roleCombo->setEnabled(false);
     ui->passwordEdit->setEnabled(false);
