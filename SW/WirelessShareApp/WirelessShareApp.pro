@@ -1,4 +1,4 @@
-QT       += core gui
+QT       += core gui serialport
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -10,10 +10,16 @@ CONFIG += c++11
 
 SOURCES += \
     main.cpp \
-    mainwindow.cpp
+    mainwindow.cpp \
+    protocol.cpp \
+    serialbridge.cpp \
+    transfermanager.cpp
 
 HEADERS += \
-    mainwindow.h
+    mainwindow.h \
+    protocol.h \
+    serialbridge.h \
+    transfermanager.h
 
 FORMS += \
     mainwindow.ui

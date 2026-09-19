@@ -2,21 +2,30 @@
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>800</width>
-    <height>600</height>
-   </rect>
-  </property>
-  <property name="windowTitle">
-   <string>MainWindow</string>
-  </property>
-  <widget class="QWidget" name="centralwidget"/>
-  <widget class="QMenuBar" name="menubar"/>
-  <widget class="QStatusBar" name="statusbar"/>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>660</width><height>520</height></rect></property>
+  <property name="windowTitle"><string>WirelessShare</string></property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item><widget class="QGroupBox" name="deviceGroup"><property name="title"><string>LOLIN S2 裝置</string></property><layout class="QGridLayout" name="deviceLayout">
+     <item row="0" column="0"><widget class="QLabel" name="portLabel"><property name="text"><string>USB CDC：</string></property></widget></item>
+     <item row="0" column="1"><widget class="QComboBox" name="portCombo"/></item>
+     <item row="0" column="2"><widget class="QPushButton" name="refreshButton"><property name="text"><string>重新整理</string></property></widget></item>
+     <item row="1" column="0"><widget class="QLabel" name="roleLabel"><property name="text"><string>裝置角色：</string></property></widget></item>
+     <item row="1" column="1" colspan="2"><widget class="QComboBox" name="roleCombo"><item><property name="text"><string>A－無線基地台 (AP)</string></property></item><item><property name="text"><string>B－連線端 (Station)</string></property></item></widget></item>
+     <item row="2" column="0"><widget class="QLabel" name="passwordLabel"><property name="text"><string>配對密碼：</string></property></widget></item>
+     <item row="2" column="1" colspan="2"><widget class="QLineEdit" name="passwordEdit"><property name="echoMode"><enum>QLineEdit::Password</enum></property><property name="placeholderText"><string>兩台電腦請輸入相同密碼（8–63 字元）</string></property></widget></item>
+     <item row="3" column="0"><widget class="QLabel" name="receiveLabel"><property name="text"><string>接收目錄：</string></property></widget></item>
+     <item row="3" column="1"><widget class="QLineEdit" name="receiveDirEdit"/></item>
+     <item row="3" column="2"><widget class="QPushButton" name="browseButton"><property name="text"><string>瀏覽…</string></property></widget></item>
+     <item row="4" column="0" colspan="2"><widget class="QCheckBox" name="autoStartCheck"><property name="text"><string>登入 Windows 時自動啟動</string></property></widget></item>
+     <item row="4" column="2"><widget class="QPushButton" name="connectButton"><property name="text"><string>連線</string></property></widget></item>
+    </layout></widget></item>
+    <item><widget class="QGroupBox" name="statusGroup"><property name="title"><string>連線狀態</string></property><layout class="QVBoxLayout" name="statusLayout"><item><widget class="QLabel" name="statusLabel"><property name="text"><string>尚未連接 USB 裝置</string></property><property name="wordWrap"><bool>true</bool></property></widget></item></layout></widget></item>
+    <item><widget class="QGroupBox" name="logGroup"><property name="title"><string>傳輸記錄</string></property><layout class="QVBoxLayout" name="logLayout"><item><widget class="QPlainTextEdit" name="logEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumBlockCount"><number>500</number></property></widget></item></layout></widget></item>
+    <item><widget class="QLabel" name="hintLabel"><property name="text"><string>提示：視窗關閉後程式仍會留在系統匣。複製文字、圖片、檔案或資料夾即可自動傳送。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar"/><widget class="QStatusBar" name="statusbar"/>
  </widget>
- <resources/>
- <connections/>
+ <resources/><connections/>
 </ui>
