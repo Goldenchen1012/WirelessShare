@@ -20,8 +20,8 @@
 namespace {
 constexpr quint64 MaxFileSize = 1024ULL * 1024ULL * 1024ULL;
 constexpr quint64 MaxClipboardSize = 64ULL * 1024ULL * 1024ULL;
-constexpr int DataChunkSize = 2048;
-constexpr qint64 SerialHighWaterMark = 32 * 1024;
+constexpr int DataChunkSize = 1024;
+constexpr qint64 SerialHighWaterMark = 8 * 1024;
 
 enum RecordType : quint8 {
     TransferBeginRecord = 1,
@@ -109,12 +109,16 @@ quint64 TransferManager::newTransferId()
 
 void TransferManager::clipboardChanged()
 {
-    if (m_suppressNextClipboard) {
-        m_suppressNextClipboard = false;
+    const QMimeData *mimeData = QApplication::clipboard()->mimeData();
+    const QByteArray signature = clipboardSignature(mimeData);
+    if (m_remoteClipboardTimer.isValid() && m_remoteClipboardTimer.elapsed() < 3000
+            && !signature.isEmpty() && signature == m_remoteClipboardSignature) {
         return;
     }
+    m_remoteClipboardSignature.clear();
+    m_remoteClipboardTimer.invalidate();
 
-    SendState *state = makeTransfer(QApplication::clipboard()->mimeData());
+    SendState *state = makeTransfer(mimeData);
     if (!state)
         return;
     m_sendQueue.append(state);
@@ -271,7 +275,7 @@ void TransferManager::pumpSend()
         }
         return;
     }
-    for (int sent = 0; sent < 8 && m_bridge->bytesToWrite() < SerialHighWaterMark; ++sent) {
+    for (int sent = 0; sent < 4 && m_bridge->bytesToWrite() < SerialHighWaterMark; ++sent) {
         QByteArray record;
         if (state->phase == SendBegin) {
             record.append(char(TransferBeginRecord));
@@ -555,13 +559,20 @@ bool TransferManager::processEnd(const QByteArray &record)
         return false;
 
     if (m_receive->kind == Text) {
-        m_suppressNextClipboard = true;
-        QApplication::clipboard()->setText(QString::fromUtf8(m_receive->memoryData));
+        const QString text = QString::fromUtf8(m_receive->memoryData);
+        QMimeData signatureData;
+        signatureData.setText(text);
+        m_remoteClipboardSignature = clipboardSignature(&signatureData);
+        m_remoteClipboardTimer.restart();
+        QApplication::clipboard()->setText(text);
     } else if (m_receive->kind == Image) {
         const QImage image = QImage::fromData(m_receive->memoryData, "PNG");
         if (image.isNull())
             return false;
-        m_suppressNextClipboard = true;
+        QMimeData signatureData;
+        signatureData.setImageData(image);
+        m_remoteClipboardSignature = clipboardSignature(&signatureData);
+        m_remoteClipboardTimer.restart();
         QApplication::clipboard()->setImage(image);
     } else {
         QList<QUrl> urls;
@@ -575,7 +586,8 @@ bool TransferManager::processEnd(const QByteArray &record)
         QDir(m_receive->stagingRoot).removeRecursively();
         QMimeData *mimeData = new QMimeData;
         mimeData->setUrls(urls);
-        m_suppressNextClipboard = true;
+        m_remoteClipboardSignature = clipboardSignature(mimeData);
+        m_remoteClipboardTimer.restart();
         QApplication::clipboard()->setMimeData(mimeData);
     }
 
@@ -585,6 +597,41 @@ bool TransferManager::processEnd(const QByteArray &record)
     m_receive = nullptr;
     sendAck(completedId, true);
     return true;
+}
+
+QByteArray TransferManager::clipboardSignature(const QMimeData *mimeData) const
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (mimeData->hasUrls()) {
+        hash.addData("F", 1);
+        bool hasLocalFile = false;
+        for (const QUrl &url : mimeData->urls()) {
+            if (!url.isLocalFile())
+                continue;
+            hasLocalFile = true;
+            hash.addData(QDir::cleanPath(url.toLocalFile()).toUtf8());
+            hash.addData("\0", 1);
+        }
+        return hasLocalFile ? hash.result() : QByteArray();
+    }
+    if (mimeData->hasImage()) {
+        const QImage image = qvariant_cast<QImage>(mimeData->imageData()).convertToFormat(QImage::Format_ARGB32);
+        if (image.isNull())
+            return QByteArray();
+        hash.addData("I", 1);
+        hash.addData(QByteArray::number(image.width()));
+        hash.addData("x", 1);
+        hash.addData(QByteArray::number(image.height()));
+        for (int row = 0; row < image.height(); ++row)
+            hash.addData(reinterpret_cast<const char *>(image.constScanLine(row)), image.width() * 4);
+        return hash.result();
+    }
+    if (mimeData->hasText()) {
+        hash.addData("T", 1);
+        hash.addData(mimeData->text().toUtf8());
+        return hash.result();
+    }
+    return QByteArray();
 }
 
 void TransferManager::sendAck(quint64 id, bool success)

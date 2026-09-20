@@ -29,7 +29,6 @@ bool SerialBridge::open(const QString &portName, bool accessPointRole, const QSt
         return false;
     }
     m_port.setDataTerminalReady(true);
-    m_port.setRequestToSend(true);
 
     m_expectedRole = accessPointRole ? 1 : 2;
     m_configPayload.clear();
@@ -50,8 +49,12 @@ bool SerialBridge::open(const QString &portName, bool accessPointRole, const QSt
 void SerialBridge::close()
 {
     m_configTimer->stop();
-    if (m_port.isOpen())
+    m_closing = true;
+    if (m_port.isOpen()) {
+        m_port.setDataTerminalReady(false);
         m_port.close();
+    }
+    m_closing = false;
     m_receiveBuffer.clear();
 }
 
@@ -116,6 +119,8 @@ void SerialBridge::processStatus(const QByteArray &payload)
     const quint8 role = static_cast<quint8>(payload.at(1));
     const qint8 rssi = static_cast<qint8>(payload.at(2));
     const QString firmwareDetail = QString::fromUtf8(payload.mid(3));
+    const int diagnosticStart = firmwareDetail.indexOf(QLatin1Char(';'));
+    const QString diagnostics = diagnosticStart >= 0 ? firmwareDetail.mid(diagnosticStart) : QString();
     if (role == m_expectedRole && state != 0)
         m_configTimer->stop();
     const QString roleText = role == 1 ? QStringLiteral("A/AP")
@@ -129,6 +134,9 @@ void SerialBridge::processStatus(const QByteArray &payload)
         detail = tr("正在連接 A 裝置");
     else if (state == 3)
         detail = tr("已與對方連線");
+    else if (state == 4)
+        detail = tr("Wi-Fi 已連接，正在建立資料通道");
+    detail += diagnostics;
     QString text = tr("裝置 %1：%2").arg(roleText, detail);
     if (state == 3 && role == 2)
         text += tr("，RSSI %1 dBm").arg(rssi);
@@ -145,7 +153,7 @@ void SerialBridge::sendConfiguration()
 
 void SerialBridge::serialError(QSerialPort::SerialPortError error)
 {
-    if (error == QSerialPort::NoError || error == QSerialPort::NotOpenError)
+    if (m_closing || error == QSerialPort::NoError || error == QSerialPort::NotOpenError)
         return;
     const QString message = m_port.errorString();
     if (error == QSerialPort::ResourceError || error == QSerialPort::DeviceNotFoundError

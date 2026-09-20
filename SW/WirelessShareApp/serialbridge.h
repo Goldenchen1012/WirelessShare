@@ -41,6 +41,7 @@ private:
     QByteArray m_receiveBuffer;
     QByteArray m_configPayload;
     quint8 m_expectedRole = 0;
+    bool m_closing = false;
 };
 
 #endif // SERIALBRIDGE_H

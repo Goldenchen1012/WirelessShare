@@ -90,6 +90,7 @@ private:
     void sendAck(quint64 id, bool success);
     QString safeDestination(const QString &relativePath) const;
     QString uniqueDestination(const QString &name) const;
+    QByteArray clipboardSignature(const QMimeData *mimeData) const;
     static quint64 newTransferId();
 
     SerialBridge *m_bridge;
@@ -98,7 +99,8 @@ private:
     ReceiveState *m_receive = nullptr;
     QString m_receiveDirectory;
     bool m_peerConnected = false;
-    bool m_suppressNextClipboard = false;
+    QByteArray m_remoteClipboardSignature;
+    QElapsedTimer m_remoteClipboardTimer;
 };
 
 #endif // TRANSFERMANAGER_H

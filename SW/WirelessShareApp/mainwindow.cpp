@@ -57,7 +57,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_statusTimer, &QTimer::timeout, m_bridge, &SerialBridge::requestStatus);
     m_statusTimer->start();
 
-    if (!ui->passwordEdit->text().isEmpty() && ui->portCombo->count() > 0) {
+    if (!ui->passwordEdit->text().isEmpty() && !m_requestedPortName.isEmpty()) {
         m_connectionRequested = true;
         QTimer::singleShot(250, this, [this] { connectDevice(true); });
     }
@@ -72,6 +72,10 @@ MainWindow::~MainWindow()
 void MainWindow::loadSettings()
 {
     QSettings settings;
+    m_requestedPortName = settings.value(QStringLiteral("device/port")).toString();
+    m_requestedVendorId = quint16(settings.value(QStringLiteral("device/vendorId"), 0).toUInt());
+    m_requestedProductId = quint16(settings.value(QStringLiteral("device/productId"), 0).toUInt());
+    m_hasRequestedUsbIds = m_requestedVendorId != 0 || m_requestedProductId != 0;
     ui->roleCombo->setCurrentIndex(settings.value(QStringLiteral("device/role"), 0).toInt());
     ui->passwordEdit->setText(settings.value(QStringLiteral("device/password")).toString());
     QString receiveDir = settings.value(QStringLiteral("transfer/receiveDirectory")).toString();
@@ -86,7 +90,9 @@ void MainWindow::loadSettings()
 void MainWindow::saveSettings()
 {
     QSettings settings;
-    settings.setValue(QStringLiteral("device/port"), ui->portCombo->currentData().toString());
+    settings.setValue(QStringLiteral("device/port"), m_requestedPortName);
+    settings.setValue(QStringLiteral("device/vendorId"), m_requestedVendorId);
+    settings.setValue(QStringLiteral("device/productId"), m_requestedProductId);
     settings.setValue(QStringLiteral("device/role"), ui->roleCombo->currentIndex());
     settings.setValue(QStringLiteral("device/password"), ui->passwordEdit->text());
     settings.setValue(QStringLiteral("transfer/receiveDirectory"), ui->receiveDirEdit->text());
@@ -96,7 +102,7 @@ void MainWindow::saveSettings()
 void MainWindow::refreshPorts()
 {
     const QString selected = ui->portCombo->currentData().toString();
-    const QString saved = QSettings().value(QStringLiteral("device/port")).toString();
+    const QString desiredPort = !m_requestedPortName.isEmpty() ? m_requestedPortName : selected;
     ui->portCombo->clear();
     int desiredIndex = -1;
     int likelyDeviceIndex = -1;
@@ -110,7 +116,10 @@ void MainWindow::refreshPorts()
                     .arg(port.productIdentifier(), 4, 16, QLatin1Char('0'));
         ui->portCombo->addItem(label, port.portName());
         const int index = ui->portCombo->count() - 1;
-        if (port.portName() == selected || (selected.isEmpty() && port.portName() == saved))
+        if (port.portName() == desiredPort
+                || (m_hasRequestedUsbIds && port.hasVendorIdentifier() && port.hasProductIdentifier()
+                    && port.vendorIdentifier() == m_requestedVendorId
+                    && port.productIdentifier() == m_requestedProductId))
             desiredIndex = index;
         const QString deviceText = port.description() + QLatin1Char(' ') + port.manufacturer();
         if (deviceText.contains(QStringLiteral("LOLIN"), Qt::CaseInsensitive)
@@ -120,10 +129,12 @@ void MainWindow::refreshPorts()
     }
     if (desiredIndex >= 0)
         ui->portCombo->setCurrentIndex(desiredIndex);
-    else if (likelyDeviceIndex >= 0)
+    else if (m_requestedPortName.isEmpty() && likelyDeviceIndex >= 0)
         ui->portCombo->setCurrentIndex(likelyDeviceIndex);
-    else if (ports.size() == 1)
+    else if (m_requestedPortName.isEmpty() && ports.size() == 1)
         ui->portCombo->setCurrentIndex(0);
+    else
+        ui->portCombo->setCurrentIndex(-1);
 }
 
 void MainWindow::chooseReceiveDirectory()
@@ -150,6 +161,7 @@ void MainWindow::toggleConnection()
         ui->passwordEdit->setEnabled(true);
         return;
     }
+    m_requestedPortName = ui->portCombo->currentData().toString();
     m_connectionRequested = true;
     if (!connectDevice(false))
         m_connectionRequested = false;
@@ -159,7 +171,7 @@ bool MainWindow::connectDevice(bool quiet)
 {
     if (m_bridge->isOpen())
         return true;
-    if (ui->portCombo->count() == 0) {
+    if (ui->portCombo->currentIndex() < 0) {
         if (!quiet)
             QMessageBox::warning(this, tr("WirelessShare"), tr("找不到可用的序列埠。"));
         return false;
@@ -171,7 +183,18 @@ bool MainWindow::connectDevice(bool quiet)
         return false;
     }
     m_transferManager->setReceiveDirectory(ui->receiveDirEdit->text());
-    if (!m_bridge->open(ui->portCombo->currentData().toString(), ui->roleCombo->currentIndex() == 0,
+    m_requestedPortName = ui->portCombo->currentData().toString();
+    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo &port : ports) {
+        if (port.portName() == m_requestedPortName && port.hasVendorIdentifier()
+                && port.hasProductIdentifier()) {
+            m_requestedVendorId = port.vendorIdentifier();
+            m_requestedProductId = port.productIdentifier();
+            m_hasRequestedUsbIds = true;
+            break;
+        }
+    }
+    if (!m_bridge->open(m_requestedPortName, ui->roleCombo->currentIndex() == 0,
                         password))
         return false;
     ui->connectButton->setText(tr("中斷"));
@@ -186,6 +209,8 @@ bool MainWindow::connectDevice(bool quiet)
 
 void MainWindow::updateDeviceStatus(const QString &text, bool peerConnected)
 {
+    if (ui->statusLabel->text() != text)
+        appendLog(text);
     ui->statusLabel->setText(text);
     m_transferManager->setPeerConnected(peerConnected);
     ui->statusLabel->setStyleSheet(peerConnected ? QStringLiteral("color: #147a36;") : QString());

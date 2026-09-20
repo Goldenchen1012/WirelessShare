@@ -3,6 +3,9 @@ WirelessShareApp 使用說明
 
 系統需求：64-bit Windows 10 或 Windows 11。
 
+v1.0.5 重要更新：兩塊 LOLIN S2 Mini 都必須重新燒錄壓縮檔 Firmware 目錄中的
+WirelessDevice.ino；本版改用單一 Station 重連流程，避免重複重連造成看門狗重啟。
+
 使用步驟：
 1. 將整個資料夾解壓縮，不要只單獨取出 EXE。
 2. 插入已燒錄 WirelessDevice 韌體的 LOLIN S2 Mini。
@@ -17,6 +20,8 @@ WirelessShareApp 使用說明
 注意事項：
 - 兩台電腦必須分別使用 A 與 B 角色，不可同時選 A 或同時選 B。
 - 配對密碼不同時無法連線。
+- App 會固定等待原本選定的 LOLIN USB CDC，不會在裝置重新連線時誤開 COM1。
+- 狀態列中的 reset、disconnect、wifi_retry、tcp_retry 是裝置診斷數值。
 - 關閉主視窗後程式仍會在 Windows 系統匣執行。
 - 請保留本資料夾內所有 DLL 與 plugins 子目錄。
 - 此程式尚未進行兩台實體電腦與兩塊 LOLIN S2 的完整硬體驗證。

@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QString>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -41,6 +42,10 @@ private:
     QSystemTrayIcon *m_trayIcon;
     QTimer *m_reconnectTimer;
     QTimer *m_statusTimer;
+    QString m_requestedPortName;
+    quint16 m_requestedVendorId = 0;
+    quint16 m_requestedProductId = 0;
+    bool m_hasRequestedUsbIds = false;
     bool m_connectionRequested = false;
     bool m_quitting = false;
 };

@@ -1,0 +1,15 @@
+WirelessDevice v1.0.5 燒錄說明
+===============================
+
+兩塊 LOLIN S2 Mini 都必須執行以下步驟：
+
+1. 使用 Arduino IDE 開啟 WirelessDevice.ino。
+2. 開發板選擇 LOLIN S2 Mini。
+3. 確認 USB CDC On Boot 設為 Enabled。
+4. 分別選擇每塊板子的 COM 埠並上傳。
+5. 上傳完成後拔除再重新插入 USB。
+
+燒錄完成後，兩台電腦都使用 v1.0.5 WirelessShareApp：
+- 一台選 A－無線基地台。
+- 另一台選 B－連線端。
+- 兩台輸入完全相同的配對密碼。

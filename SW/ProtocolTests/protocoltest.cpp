@@ -59,6 +59,29 @@ int main(int argc, char *argv[])
     require(sawCrcError, "damaged frame detected");
     require(recovered, "parser resynchronized after damaged frame");
 
+    QByteArray stressWire;
+    for (quint32 sequence = 0; sequence < 5000; ++sequence) {
+        QByteArray payload;
+        Protocol::appendU32(payload, sequence);
+        payload.append(int((sequence * 37U) % 2048U), char(sequence & 0xffU));
+        stressWire += Protocol::encodeFrame(Protocol::Data, payload);
+    }
+    QByteArray stressInput;
+    quint32 expectedSequence = 0;
+    int wireOffset = 0;
+    while (wireOffset < stressWire.size()) {
+        const int chunkSize = qMin(1 + ((wireOffset * 17) % 3072), stressWire.size() - wireOffset);
+        stressInput.append(stressWire.mid(wireOffset, chunkSize));
+        wireOffset += chunkSize;
+        while (Protocol::takeFrame(stressInput, frame)) {
+            int payloadOffset = 0;
+            quint32 sequence = 0;
+            require(Protocol::readU32(frame.payload, payloadOffset, sequence), "stress sequence field");
+            require(sequence == expectedSequence++, "stress frame ordering");
+        }
+    }
+    require(expectedSequence == 5000 && stressInput.isEmpty(), "5000-frame stress stream");
+
     qInfo() << "All protocol tests passed";
     return 0;
 }

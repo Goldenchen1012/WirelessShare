@@ -20,7 +20,7 @@ are placed on the Windows clipboard.
 ## Behavior and limits
 
 - A single file may be up to 1 GiB. Text and PNG clipboard payloads are limited to 64 MiB.
-- Files are streamed in 2 KiB chunks; an ESP32 never stores a complete transfer.
+- Files are streamed in 1 KiB chunks; an ESP32 never stores a complete transfer.
 - Each transport frame has CRC-32 protection, and a complete transfer is acknowledged only after its
   SHA-256 digest is verified.
 - An interrupted receive is deleted. The sender restarts a transfer after reconnecting.

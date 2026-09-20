@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <Preferences.h>
+#include <esp_system.h>
 
 // LOLIN S2 Mini board option: "USB CDC On Boot" must be Enabled.
 
@@ -11,7 +12,10 @@ constexpr uint8_t PROTOCOL_VERSION = 1;
 constexpr size_t HEADER_SIZE = 16;
 constexpr uint32_t MAX_PAYLOAD_SIZE = 4096;
 constexpr uint32_t STATUS_INTERVAL_MS = 2000;
-constexpr uint32_t RECONNECT_INTERVAL_MS = 2000;
+constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 30000;
+constexpr uint32_t WIFI_RESTART_DELAY_MS = 250;
+constexpr uint32_t TCP_RECONNECT_INTERVAL_MS = 1000;
+constexpr uint32_t USB_HOST_ACTIVE_MS = 5000;
 
 enum FrameType : uint8_t {
   FRAME_CONFIGURE = 1,
@@ -155,31 +159,52 @@ FrameParser wifiParser;
 DeviceRole role = ROLE_NONE;
 String wifiPassword;
 uint32_t lastStatusAt = 0;
-uint32_t lastReconnectAt = 0;
+uint32_t lastWifiReconnectAt = 0;
+uint32_t lastTcpReconnectAt = 0;
+uint32_t lastUsbActivityAt = 0;
+uint32_t wifiReconnectCount = 0;
+uint32_t tcpReconnectCount = 0;
+uint8_t lastWifiDisconnectReason = 0;
+esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
+bool usbHostSeen = false;
 bool previousPeerConnected = false;
 
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+    lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
+}
+
+bool usbHostActive() {
+  return usbHostSeen && millis() - lastUsbActivityAt <= USB_HOST_ACTIVE_MS;
+}
+
 void sendStatus() {
-  if (!Serial)
+  if (!usbHostActive())
     return;
   uint8_t state = 0;
   int8_t rssi = 0;
-  const char *message = "Not configured";
+  const char *stateText = "Not configured";
 
   if (role == ROLE_ACCESS_POINT) {
     state = peer.connected() ? 3 : 1;
-    message = peer.connected() ? "Peer connected" : "Waiting for peer";
+    stateText = peer.connected() ? "Peer connected" : "Waiting for peer";
   } else if (role == ROLE_STATION) {
     if (peer.connected()) {
       state = 3;
-      message = "Peer connected";
+      stateText = "Peer connected";
       rssi = int8_t(WiFi.RSSI());
     } else {
-      state = 2;
-      message = WiFi.status() == WL_CONNECTED ? "Connecting to peer" : "Connecting to Wi-Fi";
+      state = WiFi.status() == WL_CONNECTED ? 4 : 2;
+      stateText = state == 4 ? "Wi-Fi connected; connecting TCP" : "Connecting to Wi-Fi";
     }
   }
 
-  uint8_t payload[96] = {};
+  char message[128] = {};
+  snprintf(message, sizeof(message), "%s; reset=%u; disconnect=%u; wifi_retry=%lu; tcp_retry=%lu",
+           stateText, unsigned(resetReason), unsigned(lastWifiDisconnectReason),
+           static_cast<unsigned long>(wifiReconnectCount),
+           static_cast<unsigned long>(tcpReconnectCount));
+  uint8_t payload[160] = {};
   payload[0] = state;
   payload[1] = role;
   payload[2] = uint8_t(rssi);
@@ -199,19 +224,32 @@ void stopWireless() {
   delay(100);
 }
 
+void beginStationConnection() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(false);
+  WiFi.config(IPAddress(192, 168, 4, 2), IPAddress(192, 168, 4, 1),
+              IPAddress(255, 255, 255, 0));
+  WiFi.begin(WIFI_SSID, wifiPassword.c_str(), 1);
+  lastWifiReconnectAt = millis();
+  lastTcpReconnectAt = 0;
+}
+
 void startWireless() {
   stopWireless();
   if (role == ROLE_ACCESS_POINT) {
     WiFi.mode(WIFI_AP);
     WiFi.setSleep(false);
-    WiFi.softAP(WIFI_SSID, wifiPassword.c_str());
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
+                      IPAddress(255, 255, 255, 0));
+    WiFi.softAP(WIFI_SSID, wifiPassword.c_str(), 1);
     server.begin();
     server.setNoDelay(true);
   } else if (role == ROLE_STATION) {
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    WiFi.begin(WIFI_SSID, wifiPassword.c_str());
-    lastReconnectAt = millis();
+    wifiReconnectCount = 0;
+    tcpReconnectCount = 0;
+    lastWifiDisconnectReason = 0;
+    beginStationConnection();
   }
   previousPeerConnected = false;
   sendStatus();
@@ -255,12 +293,14 @@ void handleUsbFrame() {
 }
 
 void handleWifiFrame() {
-  if (wifiParser.type() == FRAME_DATA && Serial)
+  if (wifiParser.type() == FRAME_DATA && usbHostActive())
     writeFrame(Serial, FRAME_DATA, wifiParser.payload(), wifiParser.payloadLength());
 }
 
 void serviceUsb() {
   while (Serial.available() > 0) {
+    usbHostSeen = true;
+    lastUsbActivityAt = millis();
     if (usbParser.feed(uint8_t(Serial.read()))) {
       handleUsbFrame();
       usbParser.next();
@@ -282,6 +322,7 @@ void serviceWifi() {
 void maintainConnection() {
   if (role == ROLE_ACCESS_POINT) {
     if (!peer.connected()) {
+      peer.stop();
       WiFiClient incoming = server.accept();
       if (incoming) {
         peer.stop();
@@ -292,18 +333,23 @@ void maintainConnection() {
     }
   } else if (role == ROLE_STATION) {
     if (WiFi.status() != WL_CONNECTED) {
-      if (millis() - lastReconnectAt >= RECONNECT_INTERVAL_MS) {
-        WiFi.disconnect();
-        WiFi.begin(WIFI_SSID, wifiPassword.c_str());
-        lastReconnectAt = millis();
+      if (peer)
+        peer.stop();
+      if (millis() - lastWifiReconnectAt >= WIFI_RECONNECT_INTERVAL_MS) {
+        WiFi.disconnect(true, false);
+        delay(WIFI_RESTART_DELAY_MS);
+        ++wifiReconnectCount;
+        beginStationConnection();
+        wifiParser.reset();
       }
-    } else if (!peer.connected() && millis() - lastReconnectAt >= RECONNECT_INTERVAL_MS) {
+    } else if (!peer.connected() && millis() - lastTcpReconnectAt >= TCP_RECONNECT_INTERVAL_MS) {
       peer.stop();
-      peer.connect(IPAddress(192, 168, 4, 1), WIFI_PORT);
+      ++tcpReconnectCount;
+      peer.connect(IPAddress(192, 168, 4, 1), WIFI_PORT, 1000);
       if (peer.connected())
         peer.setNoDelay(true);
       wifiParser.reset();
-      lastReconnectAt = millis();
+      lastTcpReconnectAt = millis();
     }
   }
 
@@ -318,6 +364,8 @@ void maintainConnection() {
 
 void setup() {
   Serial.begin(921600);
+  resetReason = esp_reset_reason();
+  WiFi.onEvent(onWiFiEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   preferences.begin("wirelessShare", false);
   role = DeviceRole(preferences.getUChar("role", ROLE_NONE));
   wifiPassword = preferences.getString("password", "");
