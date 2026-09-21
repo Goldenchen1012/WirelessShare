@@ -20,8 +20,9 @@
 namespace {
 constexpr quint64 MaxFileSize = 1024ULL * 1024ULL * 1024ULL;
 constexpr quint64 MaxClipboardSize = 64ULL * 1024ULL * 1024ULL;
-constexpr int DataChunkSize = 1024;
-constexpr qint64 SerialHighWaterMark = 8 * 1024;
+constexpr int DataChunkSize = 512;
+constexpr qint64 SerialHighWaterMark = 1024;
+constexpr int ResendDelayMs = 250;
 
 enum RecordType : quint8 {
     TransferBeginRecord = 1,
@@ -65,7 +66,6 @@ TransferManager::TransferManager(SerialBridge *bridge, QObject *parent)
 {
     m_sendTimer->setInterval(5);
     connect(m_sendTimer, &QTimer::timeout, this, &TransferManager::pumpSend);
-    connect(m_bridge, &SerialBridge::bytesWritten, this, &TransferManager::pumpSend);
     connect(m_bridge, &SerialBridge::dataReceived, this, &TransferManager::receiveRecord);
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &TransferManager::clipboardChanged);
     m_sendTimer->start();
@@ -250,6 +250,7 @@ void TransferManager::resetSend(SendState *state)
     state->offset = 0;
     state->hash.reset();
     state->ackTimer.invalidate();
+    state->resendDelayTimer.start();
 }
 
 bool TransferManager::sendRecord(const QByteArray &record)
@@ -263,6 +264,11 @@ void TransferManager::pumpSend()
         return;
 
     SendState *state = m_sendQueue.first();
+    if (state->resendDelayTimer.isValid()) {
+        if (state->resendDelayTimer.elapsed() < ResendDelayMs)
+            return;
+        state->resendDelayTimer.invalidate();
+    }
     if (state->phase == SendWaitAck) {
         if (state->ackTimer.isValid() && state->ackTimer.elapsed() > 10000) {
             if (++state->retries > 3) {
@@ -275,7 +281,7 @@ void TransferManager::pumpSend()
         }
         return;
     }
-    for (int sent = 0; sent < 4 && m_bridge->bytesToWrite() < SerialHighWaterMark; ++sent) {
+    for (int sent = 0; sent < 1 && m_bridge->bytesToWrite() < SerialHighWaterMark; ++sent) {
         QByteArray record;
         if (state->phase == SendBegin) {
             record.append(char(TransferBeginRecord));
@@ -386,6 +392,9 @@ void TransferManager::receiveRecord(const QByteArray &record)
         processAck(record);
         return;
     }
+    int idOffset = 1;
+    quint64 recordId = 0;
+    const bool hasRecordId = Protocol::readU64(record, idOffset, recordId);
     bool ok = false;
     switch (static_cast<quint8>(record.at(0))) {
     case TransferBeginRecord: ok = processBegin(record); break;
@@ -395,9 +404,18 @@ void TransferManager::receiveRecord(const QByteArray &record)
     default: return;
     }
     if (!ok) {
-        if (m_receive)
+        const bool hadReceive = m_receive != nullptr;
+        if (hadReceive)
             sendAck(m_receive->id, false);
-        abortReceive(tr("收到無效或順序錯誤的資料，已取消接收"));
+        else if (hasRecordId)
+            sendAck(recordId, false);
+        if (hadReceive) {
+            abortReceive(tr("收到無效或順序錯誤的資料，已取消接收"));
+            m_reportedOrphanRecord = true;
+        } else if (!m_reportedOrphanRecord) {
+            emit activity(tr("收到缺少起始資料的傳輸，已要求對方重新傳送"));
+            m_reportedOrphanRecord = true;
+        }
     }
 }
 
@@ -416,6 +434,7 @@ bool TransferManager::processBegin(const QByteArray &record)
 
     abortReceive(QString());
     m_receive = new ReceiveState(static_cast<ContentKind>(kindValue));
+    m_reportedOrphanRecord = false;
     m_receive->id = id;
     m_receive->expectedItems = itemCount;
     if (m_receive->kind == Files) {

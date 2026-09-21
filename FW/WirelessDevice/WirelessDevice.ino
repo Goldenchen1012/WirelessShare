@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <Preferences.h>
+#include <USB.h>
 #include <esp_system.h>
 
 // LOLIN S2 Mini board option: "USB CDC On Boot" must be Enabled.
@@ -16,6 +17,7 @@ constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 30000;
 constexpr uint32_t WIFI_RESTART_DELAY_MS = 250;
 constexpr uint32_t TCP_RECONNECT_INTERVAL_MS = 1000;
 constexpr uint32_t USB_HOST_ACTIVE_MS = 5000;
+constexpr size_t USB_RX_BUFFER_SIZE = 8192;
 
 enum FrameType : uint8_t {
   FRAME_CONFIGURE = 1,
@@ -168,6 +170,25 @@ uint8_t lastWifiDisconnectReason = 0;
 esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
 bool usbHostSeen = false;
 bool previousPeerConnected = false;
+volatile uint32_t usbRxDroppedBytes = 0;
+volatile bool usbRxOverflowed = false;
+uint32_t usbTxFailureCount = 0;
+
+void onUsbCdcEvent(void *, esp_event_base_t, int32_t eventId, void *eventData) {
+  if (eventId != ARDUINO_USB_CDC_RX_OVERFLOW_EVENT || eventData == nullptr)
+    return;
+  const arduino_usb_cdc_event_data_t *data =
+      static_cast<const arduino_usb_cdc_event_data_t *>(eventData);
+  usbRxDroppedBytes += data->rx_overflow.dropped_bytes;
+  usbRxOverflowed = true;
+}
+
+bool writeUsbFrame(uint8_t type, const uint8_t *payload, uint32_t length) {
+  if (writeFrame(Serial, type, payload, length))
+    return true;
+  ++usbTxFailureCount;
+  return false;
+}
 
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
@@ -199,18 +220,20 @@ void sendStatus() {
     }
   }
 
-  char message[128] = {};
-  snprintf(message, sizeof(message), "%s; reset=%u; disconnect=%u; wifi_retry=%lu; tcp_retry=%lu",
+  char message[192] = {};
+  snprintf(message, sizeof(message), "%s; reset=%u; disconnect=%u; wifi_retry=%lu; tcp_retry=%lu; usb_rx_drop=%lu; usb_tx_fail=%lu",
            stateText, unsigned(resetReason), unsigned(lastWifiDisconnectReason),
            static_cast<unsigned long>(wifiReconnectCount),
-           static_cast<unsigned long>(tcpReconnectCount));
-  uint8_t payload[160] = {};
+           static_cast<unsigned long>(tcpReconnectCount),
+           static_cast<unsigned long>(usbRxDroppedBytes),
+           static_cast<unsigned long>(usbTxFailureCount));
+  uint8_t payload[224] = {};
   payload[0] = state;
   payload[1] = role;
   payload[2] = uint8_t(rssi);
   const size_t messageLength = min(strlen(message), sizeof(payload) - 3);
   memcpy(payload + 3, message, messageLength);
-  writeFrame(Serial, FRAME_STATUS, payload, 3 + messageLength);
+  writeUsbFrame(FRAME_STATUS, payload, 3 + messageLength);
   lastStatusAt = millis();
 }
 
@@ -294,10 +317,14 @@ void handleUsbFrame() {
 
 void handleWifiFrame() {
   if (wifiParser.type() == FRAME_DATA && usbHostActive())
-    writeFrame(Serial, FRAME_DATA, wifiParser.payload(), wifiParser.payloadLength());
+    writeUsbFrame(FRAME_DATA, wifiParser.payload(), wifiParser.payloadLength());
 }
 
 void serviceUsb() {
+  if (usbRxOverflowed) {
+    usbRxOverflowed = false;
+    usbParser.reset();
+  }
   while (Serial.available() > 0) {
     usbHostSeen = true;
     lastUsbActivityAt = millis();
@@ -363,6 +390,8 @@ void maintainConnection() {
 } // namespace
 
 void setup() {
+  Serial.setRxBufferSize(USB_RX_BUFFER_SIZE);
+  Serial.onEvent(ARDUINO_USB_CDC_RX_OVERFLOW_EVENT, onUsbCdcEvent);
   Serial.begin(921600);
   resetReason = esp_reset_reason();
   WiFi.onEvent(onWiFiEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);

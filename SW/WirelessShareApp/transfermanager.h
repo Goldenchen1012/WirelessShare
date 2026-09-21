@@ -54,6 +54,7 @@ private:
         QFile file;
         QCryptographicHash hash;
         QElapsedTimer ackTimer;
+        QElapsedTimer resendDelayTimer;
         int retries = 0;
         QString label;
     };
@@ -101,6 +102,7 @@ private:
     bool m_peerConnected = false;
     QByteArray m_remoteClipboardSignature;
     QElapsedTimer m_remoteClipboardTimer;
+    bool m_reportedOrphanRecord = false;
 };
 
 #endif // TRANSFERMANAGER_H
