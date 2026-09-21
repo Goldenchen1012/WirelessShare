@@ -3,8 +3,8 @@ WirelessShareApp 使用說明
 
 系統需求：64-bit Windows 10 或 Windows 11。
 
-v1.0.6 重要更新：兩塊 LOLIN S2 Mini 都必須重新燒錄壓縮檔 Firmware 目錄中的
-WirelessDevice.ino；本版擴大 USB CDC 接收緩衝並降低 App 傳送突發量，修正 CRC 與資料順序錯誤。
+v1.0.7 重要更新：兩塊 LOLIN S2 Mini 都必須重新燒錄壓縮檔 Firmware 目錄中的
+WirelessDevice.ino；本版加入裝置級資料幀 ACK/NACK 與 sequence 流量控制，防止 USB CDC 緩衝溢位。
 
 使用步驟：
 1. 將整個資料夾解壓縮，不要只單獨取出 EXE。
@@ -22,7 +22,7 @@ WirelessDevice.ino；本版擴大 USB CDC 接收緩衝並降低 App 傳送突發
 - 配對密碼不同時無法連線。
 - App 會固定等待原本選定的 LOLIN USB CDC，不會在裝置重新連線時誤開 COM1。
 - 狀態列中的 reset、disconnect、wifi_retry、tcp_retry 是裝置診斷數值。
-- usb_rx_drop 與 usb_tx_fail 正常應持續為 0；若數值增加，請保留兩端傳輸記錄以便查修。
+- usb_rx_drop、usb_tx_fail、usb_crc_fail 與 tcp_tx_fail 正常應持續為 0；若數值增加，請保留兩端傳輸記錄以便查修。
 - 關閉主視窗後程式仍會在 Windows 系統匣執行。
 - 請保留本資料夾內所有 DLL 與 plugins 子目錄。
 - 此程式尚未進行兩台實體電腦與兩塊 LOLIN S2 的完整硬體驗證。

@@ -66,6 +66,20 @@ TransferManager::TransferManager(SerialBridge *bridge, QObject *parent)
 {
     m_sendTimer->setInterval(5);
     connect(m_sendTimer, &QTimer::timeout, this, &TransferManager::pumpSend);
+    connect(m_bridge, &SerialBridge::dataFrameAcknowledged, this, &TransferManager::pumpSend);
+    connect(m_bridge, &SerialBridge::dataFlowFailed, this, [this] {
+        if (m_sendQueue.isEmpty())
+            return;
+        SendState *state = m_sendQueue.first();
+        if (++state->retries <= 3) {
+            emit activity(tr("本機裝置傳輸失敗，重新傳送 (%1/3)：%2")
+                          .arg(state->retries).arg(state->label));
+            resetSend(state);
+        } else {
+            emit activity(tr("本機裝置傳輸失敗，傳送已取消：%1").arg(state->label));
+            finishSend();
+        }
+    });
     connect(m_bridge, &SerialBridge::dataReceived, this, &TransferManager::receiveRecord);
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &TransferManager::clipboardChanged);
     m_sendTimer->start();

@@ -9,7 +9,7 @@ namespace {
 
 constexpr char WIFI_SSID[] = "WirelessShare-Link";
 constexpr uint16_t WIFI_PORT = 42800;
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 2;
 constexpr size_t HEADER_SIZE = 16;
 constexpr uint32_t MAX_PAYLOAD_SIZE = 4096;
 constexpr uint32_t STATUS_INTERVAL_MS = 2000;
@@ -23,7 +23,9 @@ enum FrameType : uint8_t {
   FRAME_CONFIGURE = 1,
   FRAME_GET_STATUS = 2,
   FRAME_DATA = 3,
-  FRAME_STATUS = 4
+  FRAME_STATUS = 4,
+  FRAME_DATA_ACK = 5,
+  FRAME_DATA_NACK = 6
 };
 
 enum DeviceRole : uint8_t {
@@ -79,11 +81,16 @@ public:
       _expectedCrc = readU32(_header + 12);
       if (_header[4] != PROTOCOL_VERSION || _payloadLength > MAX_PAYLOAD_SIZE) {
         reset();
+        _failed = true;
         return false;
       }
       _payloadPosition = 0;
       if (_payloadLength == 0) {
         _complete = _expectedCrc == crc32(nullptr, 0);
+        if (!_complete) {
+          reset();
+          _failed = true;
+        }
         return _complete;
       }
       return false;
@@ -93,14 +100,21 @@ public:
     if (_payloadPosition != _payloadLength)
       return false;
     _complete = crc32(_payload, _payloadLength) == _expectedCrc;
-    if (!_complete)
+    if (!_complete) {
       reset();
+      _failed = true;
+    }
     return _complete;
   }
 
   uint8_t type() const { return _header[5]; }
   const uint8_t *payload() const { return _payload; }
   uint32_t payloadLength() const { return _payloadLength; }
+  bool takeFailure() {
+    const bool failed = _failed;
+    _failed = false;
+    return failed;
+  }
 
   void next() { reset(); }
 
@@ -120,6 +134,7 @@ private:
   uint32_t _payloadLength = 0;
   uint32_t _expectedCrc = 0;
   bool _complete = false;
+  bool _failed = false;
 };
 
 template <typename T>
@@ -173,6 +188,11 @@ bool previousPeerConnected = false;
 volatile uint32_t usbRxDroppedBytes = 0;
 volatile bool usbRxOverflowed = false;
 uint32_t usbTxFailureCount = 0;
+uint32_t usbCrcFailureCount = 0;
+uint32_t tcpTxFailureCount = 0;
+uint32_t lastUsbDataSequence = 0;
+bool hasLastUsbDataSequence = false;
+bool lastUsbDataSucceeded = false;
 
 void onUsbCdcEvent(void *, esp_event_base_t, int32_t eventId, void *eventData) {
   if (eventId != ARDUINO_USB_CDC_RX_OVERFLOW_EVENT || eventData == nullptr)
@@ -188,6 +208,12 @@ bool writeUsbFrame(uint8_t type, const uint8_t *payload, uint32_t length) {
     return true;
   ++usbTxFailureCount;
   return false;
+}
+
+void sendUsbDataResult(uint8_t type, uint32_t sequence) {
+  uint8_t payload[4] = {};
+  writeU32(payload, sequence);
+  writeUsbFrame(type, payload, sizeof(payload));
 }
 
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -220,14 +246,16 @@ void sendStatus() {
     }
   }
 
-  char message[192] = {};
-  snprintf(message, sizeof(message), "%s; reset=%u; disconnect=%u; wifi_retry=%lu; tcp_retry=%lu; usb_rx_drop=%lu; usb_tx_fail=%lu",
+  char message[256] = {};
+  snprintf(message, sizeof(message), "%s; reset=%u; disconnect=%u; wifi_retry=%lu; tcp_retry=%lu; usb_rx_drop=%lu; usb_tx_fail=%lu; usb_crc_fail=%lu; tcp_tx_fail=%lu",
            stateText, unsigned(resetReason), unsigned(lastWifiDisconnectReason),
            static_cast<unsigned long>(wifiReconnectCount),
            static_cast<unsigned long>(tcpReconnectCount),
            static_cast<unsigned long>(usbRxDroppedBytes),
-           static_cast<unsigned long>(usbTxFailureCount));
-  uint8_t payload[224] = {};
+           static_cast<unsigned long>(usbTxFailureCount),
+           static_cast<unsigned long>(usbCrcFailureCount),
+           static_cast<unsigned long>(tcpTxFailureCount));
+  uint8_t payload[288] = {};
   payload[0] = state;
   payload[1] = role;
   payload[2] = uint8_t(rssi);
@@ -292,6 +320,9 @@ void applyConfiguration(const uint8_t *payload, uint32_t length) {
   for (uint8_t index = 0; index < passwordLength; ++index)
     requestedPassword += char(payload[2 + index]);
 
+  hasLastUsbDataSequence = false;
+  lastUsbDataSucceeded = false;
+
   if (role == requestedRole && wifiPassword == requestedPassword) {
     sendStatus();
     return;
@@ -309,9 +340,32 @@ void handleUsbFrame() {
     applyConfiguration(usbParser.payload(), usbParser.payloadLength());
   } else if (usbParser.type() == FRAME_GET_STATUS) {
     sendStatus();
-  } else if (usbParser.type() == FRAME_DATA && peer.connected()) {
-    if (!writeFrame(peer, FRAME_DATA, usbParser.payload(), usbParser.payloadLength()))
+  } else if (usbParser.type() == FRAME_DATA) {
+    if (usbParser.payloadLength() < 4) {
+      ++usbCrcFailureCount;
+      writeUsbFrame(FRAME_DATA_NACK, nullptr, 0);
+      return;
+    }
+    const uint32_t sequence = readU32(usbParser.payload());
+    if (hasLastUsbDataSequence && sequence == lastUsbDataSequence && lastUsbDataSucceeded) {
+      sendUsbDataResult(FRAME_DATA_ACK, sequence);
+      return;
+    }
+    hasLastUsbDataSequence = true;
+    lastUsbDataSequence = sequence;
+    lastUsbDataSucceeded = false;
+    if (!peer.connected()) {
+      sendUsbDataResult(FRAME_DATA_NACK, sequence);
+      return;
+    }
+    if (writeFrame(peer, FRAME_DATA, usbParser.payload() + 4, usbParser.payloadLength() - 4)) {
+      lastUsbDataSucceeded = true;
+      sendUsbDataResult(FRAME_DATA_ACK, sequence);
+    } else {
+      ++tcpTxFailureCount;
+      sendUsbDataResult(FRAME_DATA_NACK, sequence);
       peer.stop();
+    }
   }
 }
 
@@ -324,11 +378,17 @@ void serviceUsb() {
   if (usbRxOverflowed) {
     usbRxOverflowed = false;
     usbParser.reset();
+    writeUsbFrame(FRAME_DATA_NACK, nullptr, 0);
   }
   while (Serial.available() > 0) {
     usbHostSeen = true;
     lastUsbActivityAt = millis();
-    if (usbParser.feed(uint8_t(Serial.read()))) {
+    const bool complete = usbParser.feed(uint8_t(Serial.read()));
+    if (usbParser.takeFailure()) {
+      ++usbCrcFailureCount;
+      writeUsbFrame(FRAME_DATA_NACK, nullptr, 0);
+    }
+    if (complete) {
       handleUsbFrame();
       usbParser.next();
     }

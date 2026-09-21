@@ -1,4 +1,4 @@
-WirelessDevice v1.0.6 燒錄說明
+WirelessDevice v1.0.7 燒錄說明
 ===============================
 
 兩塊 LOLIN S2 Mini 都必須執行以下步驟：
@@ -9,7 +9,7 @@ WirelessDevice v1.0.6 燒錄說明
 4. 分別選擇每塊板子的 COM 埠並上傳。
 5. 上傳完成後拔除再重新插入 USB。
 
-燒錄完成後，兩台電腦都使用 v1.0.6 WirelessShareApp：
+燒錄完成後，兩台電腦都使用 v1.0.7 WirelessShareApp：
 - 一台選 A－無線基地台。
 - 另一台選 B－連線端。
 - 兩台輸入完全相同的配對密碼。

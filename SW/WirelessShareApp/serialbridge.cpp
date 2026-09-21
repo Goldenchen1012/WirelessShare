@@ -5,7 +5,7 @@
 #include <QTimer>
 
 SerialBridge::SerialBridge(QObject *parent)
-    : QObject(parent), m_configTimer(new QTimer(this))
+    : QObject(parent), m_configTimer(new QTimer(this)), m_dataRetryTimer(new QTimer(this))
 {
     connect(&m_port, &QSerialPort::readyRead, this, &SerialBridge::readAvailable);
     connect(&m_port, &QSerialPort::bytesWritten, this, &SerialBridge::bytesWritten);
@@ -13,6 +13,8 @@ SerialBridge::SerialBridge(QObject *parent)
             this, &SerialBridge::serialError);
     m_configTimer->setInterval(1000);
     connect(m_configTimer, &QTimer::timeout, this, &SerialBridge::sendConfiguration);
+    m_dataRetryTimer->setSingleShot(true);
+    connect(m_dataRetryTimer, &QTimer::timeout, this, &SerialBridge::retryDataFrame);
 }
 
 bool SerialBridge::open(const QString &portName, bool accessPointRole, const QString &password)
@@ -56,6 +58,8 @@ void SerialBridge::close()
     }
     m_closing = false;
     m_receiveBuffer.clear();
+    resetDataFlow();
+    m_nextDataSequence = 1;
 }
 
 bool SerialBridge::isOpen() const
@@ -70,12 +74,19 @@ QString SerialBridge::portName() const
 
 qint64 SerialBridge::bytesToWrite() const
 {
+    if (!m_inFlightData.isEmpty() || !m_dataQueue.isEmpty())
+        return m_port.bytesToWrite() + Protocol::MaxPayloadSize;
     return m_port.bytesToWrite();
 }
 
 bool SerialBridge::sendData(const QByteArray &payload)
 {
-    return writeFrame(Protocol::Data, payload);
+    if (!m_port.isOpen() || payload.isEmpty()
+            || payload.size() + 4 > static_cast<int>(Protocol::MaxPayloadSize))
+        return false;
+    m_dataQueue.enqueue(payload);
+    pumpDataQueue();
+    return true;
 }
 
 void SerialBridge::requestStatus()
@@ -89,6 +100,69 @@ bool SerialBridge::writeFrame(quint8 type, const QByteArray &payload)
         return false;
     const QByteArray frame = Protocol::encodeFrame(type, payload);
     return !frame.isEmpty() && m_port.write(frame) == frame.size();
+}
+
+bool SerialBridge::writeInFlightData()
+{
+    QByteArray payload;
+    Protocol::appendU32(payload, m_inFlightSequence);
+    payload.append(m_inFlightData);
+    return writeFrame(Protocol::Data, payload);
+}
+
+void SerialBridge::pumpDataQueue()
+{
+    if (!m_port.isOpen() || !m_inFlightData.isEmpty() || m_dataQueue.isEmpty())
+        return;
+    m_inFlightData = m_dataQueue.dequeue();
+    m_inFlightSequence = m_nextDataSequence++;
+    m_dataRetryCount = 0;
+    writeInFlightData();
+    m_dataRetryTimer->start(1000);
+}
+
+void SerialBridge::retryDataFrame()
+{
+    if (!m_port.isOpen() || m_inFlightData.isEmpty())
+        return;
+    if (++m_dataRetryCount > 5) {
+        resetDataFlow();
+        emit errorOccurred(tr("本機裝置未確認資料幀，已中止本次傳輸"));
+        emit dataFlowFailed();
+        return;
+    }
+    writeInFlightData();
+    m_dataRetryTimer->start(1000);
+}
+
+void SerialBridge::processDataResult(const QByteArray &payload, bool accepted)
+{
+    if (!accepted && payload.isEmpty() && !m_inFlightData.isEmpty()) {
+        m_dataRetryTimer->start(250);
+        return;
+    }
+    int offset = 0;
+    quint32 sequence = 0;
+    if (payload.size() != 4 || !Protocol::readU32(payload, offset, sequence)
+            || m_inFlightData.isEmpty() || sequence != m_inFlightSequence)
+        return;
+    if (!accepted) {
+        m_dataRetryTimer->start(250);
+        return;
+    }
+    m_dataRetryTimer->stop();
+    m_inFlightData.clear();
+    m_dataRetryCount = 0;
+    pumpDataQueue();
+    emit dataFrameAcknowledged();
+}
+
+void SerialBridge::resetDataFlow()
+{
+    m_dataRetryTimer->stop();
+    m_dataQueue.clear();
+    m_inFlightData.clear();
+    m_dataRetryCount = 0;
 }
 
 void SerialBridge::readAvailable()
@@ -108,6 +182,10 @@ void SerialBridge::readAvailable()
             emit dataReceived(frame.payload);
         else if (frame.type == Protocol::Status)
             processStatus(frame.payload);
+        else if (frame.type == Protocol::DataAck)
+            processDataResult(frame.payload, true);
+        else if (frame.type == Protocol::DataNack)
+            processDataResult(frame.payload, false);
     }
 }
 
@@ -123,6 +201,8 @@ void SerialBridge::processStatus(const QByteArray &payload)
     const QString diagnostics = diagnosticStart >= 0 ? firmwareDetail.mid(diagnosticStart) : QString();
     if (role == m_expectedRole && state != 0)
         m_configTimer->stop();
+    if (state != 3)
+        resetDataFlow();
     const QString roleText = role == 1 ? QStringLiteral("A/AP")
                                        : role == 2 ? QStringLiteral("B/Station") : tr("未設定");
     QString detail = firmwareDetail;

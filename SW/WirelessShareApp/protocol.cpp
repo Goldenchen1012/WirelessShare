@@ -70,7 +70,7 @@ QByteArray encodeFrame(quint8 type, const QByteArray &payload)
     QByteArray frame;
     frame.reserve(HeaderSize + payload.size());
     frame.append(Magic);
-    frame.append(char(1));
+    frame.append(char(2));
     frame.append(char(type));
     appendU16(frame, 0);
     appendU32(frame, static_cast<quint32>(payload.size()));
@@ -92,7 +92,7 @@ bool takeFrame(QByteArray &buffer, Frame &frame, QString *error)
     if (buffer.size() < HeaderSize)
         return false;
 
-    if (static_cast<quint8>(buffer.at(4)) != 1) {
+    if (static_cast<quint8>(buffer.at(4)) != 2) {
         buffer.remove(0, 1);
         if (error)
             *error = QStringLiteral("Unsupported transport version");

@@ -19,7 +19,7 @@ int main(int argc, char *argv[])
     require(Protocol::crc32(QByteArrayLiteral("123456789")) == 0xcbf43926U,
             "CRC-32 reference vector");
     require(Protocol::encodeFrame(Protocol::Data, QByteArrayLiteral("abc"))
-            == QByteArray::fromHex("575348310103000003000000c2412435616263"),
+            == QByteArray::fromHex("575348310203000003000000c2412435616263"),
             "known encoded frame bytes");
     require(Protocol::encodeFrame(Protocol::Data,
                                   QByteArray(Protocol::MaxPayloadSize + 1, 'x')).isEmpty(),
@@ -35,6 +35,17 @@ int main(int argc, char *argv[])
     }
     require(frame.type == Protocol::Data && frame.payload == QByteArrayLiteral("fragmented"),
             "fragmented frame content");
+
+    QByteArray ackPayload;
+    Protocol::appendU32(ackPayload, 0x78563412U);
+    QByteArray ackWire = Protocol::encodeFrame(Protocol::DataAck, ackPayload);
+    require(Protocol::takeFrame(ackWire, frame) && frame.type == Protocol::DataAck,
+            "device ACK frame type");
+    int ackOffset = 0;
+    quint32 ackSequence = 0;
+    require(Protocol::readU32(frame.payload, ackOffset, ackSequence)
+            && ackSequence == 0x78563412U && ackOffset == frame.payload.size(),
+            "device ACK sequence");
 
     QByteArray combined = Protocol::encodeFrame(Protocol::Status, QByteArrayLiteral("one"))
             + Protocol::encodeFrame(Protocol::Data, QByteArrayLiteral("two"));
