@@ -7,7 +7,7 @@ int main(int argc, char *argv[])
     QApplication a(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("WirelessShare"));
     QCoreApplication::setApplicationName(QStringLiteral("WirelessShare"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.7"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.8"));
     QApplication::setQuitOnLastWindowClosed(false);
     MainWindow w;
     if (!QCoreApplication::arguments().contains(QStringLiteral("--background")))

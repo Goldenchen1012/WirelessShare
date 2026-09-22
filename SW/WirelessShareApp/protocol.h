@@ -16,7 +16,9 @@ enum FrameType : quint8 {
     Data = 3,
     Status = 4,
     DataAck = 5,
-    DataNack = 6
+    DataNack = 6,
+    DirectHello = 7,
+    DirectHelloAck = 8
 };
 
 struct Frame

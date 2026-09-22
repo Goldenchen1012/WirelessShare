@@ -24,6 +24,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 private slots:
     void refreshPorts();
+    void updatePortModeUi();
     void chooseReceiveDirectory();
     void toggleConnection();
     void updateDeviceStatus(const QString &text, bool peerConnected);

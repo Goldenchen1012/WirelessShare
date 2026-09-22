@@ -47,6 +47,16 @@ int main(int argc, char *argv[])
             && ackSequence == 0x78563412U && ackOffset == frame.payload.size(),
             "device ACK sequence");
 
+    QByteArray directHello(1, char(1));
+    directHello.append(QByteArray(32, char(0xa5)));
+    Protocol::appendU32(directHello, 0x12345678U);
+    QByteArray directWire = Protocol::encodeFrame(Protocol::DirectHello, directHello);
+    require(Protocol::takeFrame(directWire, frame) && frame.type == Protocol::DirectHello
+            && frame.payload == directHello, "direct serial hello frame");
+    directWire = Protocol::encodeFrame(Protocol::DirectHelloAck, directHello);
+    require(Protocol::takeFrame(directWire, frame) && frame.type == Protocol::DirectHelloAck
+            && frame.payload == directHello, "direct serial hello ACK frame");
+
     QByteArray combined = Protocol::encodeFrame(Protocol::Status, QByteArrayLiteral("one"))
             + Protocol::encodeFrame(Protocol::Data, QByteArrayLiteral("two"));
     require(Protocol::takeFrame(combined, frame) && frame.payload == QByteArrayLiteral("one"),

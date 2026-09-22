@@ -2,6 +2,8 @@
 
 #include "protocol.h"
 
+#include <QCryptographicHash>
+#include <QRandomGenerator>
 #include <QTimer>
 
 SerialBridge::SerialBridge(QObject *parent)
@@ -17,7 +19,8 @@ SerialBridge::SerialBridge(QObject *parent)
     connect(m_dataRetryTimer, &QTimer::timeout, this, &SerialBridge::retryDataFrame);
 }
 
-bool SerialBridge::open(const QString &portName, bool accessPointRole, const QString &password)
+bool SerialBridge::open(const QString &portName, bool accessPointRole, const QString &password,
+                        bool directSerial)
 {
     close();
     m_port.setPortName(portName);
@@ -33,6 +36,18 @@ bool SerialBridge::open(const QString &portName, bool accessPointRole, const QSt
     m_port.setDataTerminalReady(true);
 
     m_expectedRole = accessPointRole ? 1 : 2;
+    m_directSerial = directSerial;
+    if (m_directSerial) {
+        m_directHelloPayload.clear();
+        m_directHelloPayload.append(char(m_expectedRole));
+        m_directHelloPayload.append(QCryptographicHash::hash(password.toUtf8(),
+                                                              QCryptographicHash::Sha256));
+        Protocol::appendU32(m_directHelloPayload, QRandomGenerator::global()->generate());
+        updateDirectStatus(false, tr("等待另一端"));
+        requestStatus();
+        return true;
+    }
+
     m_configPayload.clear();
     m_configPayload.append(char(m_expectedRole));
     const QByteArray passwordUtf8 = password.toUtf8();
@@ -60,6 +75,13 @@ void SerialBridge::close()
     m_receiveBuffer.clear();
     resetDataFlow();
     m_nextDataSequence = 1;
+    m_directHelloPayload.clear();
+    m_directPeerSession.clear();
+    m_lastDirectReceiveSequence = 0;
+    m_hasLastDirectReceiveSequence = false;
+    m_directSerial = false;
+    m_directPeerConnected = false;
+    m_directPeerTimer.invalidate();
 }
 
 bool SerialBridge::isOpen() const
@@ -91,6 +113,15 @@ bool SerialBridge::sendData(const QByteArray &payload)
 
 void SerialBridge::requestStatus()
 {
+    if (m_directSerial) {
+        writeFrame(Protocol::DirectHello, m_directHelloPayload);
+        if (m_directPeerConnected && m_directPeerTimer.isValid()
+                && m_directPeerTimer.elapsed() > 5000) {
+            resetDataFlow();
+            updateDirectStatus(false, tr("連線逾時，等待另一端"));
+        }
+        return;
+    }
     writeFrame(Protocol::GetStatus, QByteArray());
 }
 
@@ -174,23 +205,91 @@ void SerialBridge::readAvailable()
         if (!Protocol::takeFrame(m_receiveBuffer, frame, &error)) {
             if (!error.isEmpty()) {
                 emit errorOccurred(error);
+                if (m_directSerial)
+                    writeFrame(Protocol::DataNack, QByteArray());
                 continue;
             }
             break;
         }
-        if (frame.type == Protocol::Data)
-            emit dataReceived(frame.payload);
-        else if (frame.type == Protocol::Status)
+        if (frame.type == Protocol::Data) {
+            if (m_directSerial)
+                processDirectData(frame.payload);
+            else
+                emit dataReceived(frame.payload);
+        } else if (frame.type == Protocol::Status && !m_directSerial)
             processStatus(frame.payload);
         else if (frame.type == Protocol::DataAck)
             processDataResult(frame.payload, true);
         else if (frame.type == Protocol::DataNack)
             processDataResult(frame.payload, false);
+        else if (frame.type == Protocol::DirectHello && m_directSerial)
+            processDirectHello(frame.payload, false);
+        else if (frame.type == Protocol::DirectHelloAck && m_directSerial)
+            processDirectHello(frame.payload, true);
     }
+}
+
+void SerialBridge::processDirectData(const QByteArray &payload)
+{
+    if (!m_directPeerConnected) {
+        writeFrame(Protocol::DataNack, QByteArray());
+        return;
+    }
+    int offset = 0;
+    quint32 sequence = 0;
+    if (!Protocol::readU32(payload, offset, sequence) || payload.size() <= offset) {
+        writeFrame(Protocol::DataNack, QByteArray());
+        return;
+    }
+
+    QByteArray result;
+    Protocol::appendU32(result, sequence);
+    if (m_hasLastDirectReceiveSequence && sequence == m_lastDirectReceiveSequence) {
+        writeFrame(Protocol::DataAck, result);
+        m_directPeerTimer.restart();
+        updateDirectStatus(true, tr("已與對方連線"));
+        return;
+    }
+
+    m_lastDirectReceiveSequence = sequence;
+    m_hasLastDirectReceiveSequence = true;
+    emit dataReceived(payload.mid(offset));
+    writeFrame(Protocol::DataAck, result);
+    m_directPeerTimer.restart();
+    updateDirectStatus(true, tr("已與對方連線"));
+}
+
+void SerialBridge::processDirectHello(const QByteArray &payload, bool acknowledgement)
+{
+    const quint8 expectedPeerRole = m_expectedRole == 1 ? 2 : 1;
+    if (payload.size() != 37 || static_cast<quint8>(payload.at(0)) != expectedPeerRole
+            || payload.mid(1, 32) != m_directHelloPayload.mid(1, 32)) {
+        resetDataFlow();
+        updateDirectStatus(false, tr("另一端角色或配對密碼不符"));
+        return;
+    }
+
+    const QByteArray peerSession = payload.right(4);
+    if (peerSession != m_directPeerSession) {
+        m_directPeerSession = peerSession;
+        m_hasLastDirectReceiveSequence = false;
+    }
+    m_directPeerTimer.restart();
+    updateDirectStatus(true, tr("已與對方連線"));
+    if (!acknowledgement)
+        writeFrame(Protocol::DirectHelloAck, m_directHelloPayload);
+}
+
+void SerialBridge::updateDirectStatus(bool connected, const QString &detail)
+{
+    m_directPeerConnected = connected;
+    emit statusChanged(tr("CP210x 直接串列：%1").arg(detail), connected);
 }
 
 void SerialBridge::processStatus(const QByteArray &payload)
 {
+    if (m_directSerial)
+        return;
     if (payload.size() < 3)
         return;
     const quint8 state = static_cast<quint8>(payload.at(0));
@@ -225,6 +324,10 @@ void SerialBridge::processStatus(const QByteArray &payload)
 
 void SerialBridge::sendConfiguration()
 {
+    if (m_directSerial) {
+        requestStatus();
+        return;
+    }
     if (m_port.isOpen() && !m_configPayload.isEmpty()) {
         writeFrame(Protocol::Configure, m_configPayload);
         requestStatus();

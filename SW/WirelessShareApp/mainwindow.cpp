@@ -43,12 +43,15 @@ MainWindow::MainWindow(QWidget *parent)
     refreshPorts();
 
     connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::refreshPorts);
+    connect(ui->portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updatePortModeUi);
     connect(ui->browseButton, &QPushButton::clicked, this, &MainWindow::chooseReceiveDirectory);
     connect(ui->connectButton, &QPushButton::clicked, this, &MainWindow::toggleConnection);
     connect(ui->autoStartCheck, &QCheckBox::toggled, this, &MainWindow::setAutoStart);
     connect(m_bridge, &SerialBridge::statusChanged, this, &MainWindow::updateDeviceStatus);
     connect(m_bridge, &SerialBridge::errorOccurred, this, &MainWindow::showError);
     connect(m_transferManager, &TransferManager::activity, this, &MainWindow::appendLog);
+    updatePortModeUi();
 
     m_reconnectTimer->setInterval(3000);
     connect(m_reconnectTimer, &QTimer::timeout, this, &MainWindow::reconnectIfNeeded);
@@ -116,15 +119,20 @@ void MainWindow::refreshPorts()
                     .arg(port.productIdentifier(), 4, 16, QLatin1Char('0'));
         ui->portCombo->addItem(label, port.portName());
         const int index = ui->portCombo->count() - 1;
+        const QString deviceText = port.description() + QLatin1Char(' ') + port.manufacturer();
+        const bool cp210x = (port.hasVendorIdentifier() && port.hasProductIdentifier()
+                && port.vendorIdentifier() == 0x10c4 && port.productIdentifier() == 0xea60)
+                || deviceText.contains(QStringLiteral("CP210"), Qt::CaseInsensitive);
+        ui->portCombo->setItemData(index, cp210x, Qt::UserRole + 1);
         if (port.portName() == desiredPort
                 || (m_hasRequestedUsbIds && port.hasVendorIdentifier() && port.hasProductIdentifier()
                     && port.vendorIdentifier() == m_requestedVendorId
                     && port.productIdentifier() == m_requestedProductId))
             desiredIndex = index;
-        const QString deviceText = port.description() + QLatin1Char(' ') + port.manufacturer();
         if (deviceText.contains(QStringLiteral("LOLIN"), Qt::CaseInsensitive)
                 || deviceText.contains(QStringLiteral("ESP32"), Qt::CaseInsensitive)
-                || deviceText.contains(QStringLiteral("USB JTAG/serial"), Qt::CaseInsensitive))
+                || deviceText.contains(QStringLiteral("USB JTAG/serial"), Qt::CaseInsensitive)
+                || cp210x)
             likelyDeviceIndex = index;
     }
     if (desiredIndex >= 0)
@@ -135,6 +143,18 @@ void MainWindow::refreshPorts()
         ui->portCombo->setCurrentIndex(0);
     else
         ui->portCombo->setCurrentIndex(-1);
+    updatePortModeUi();
+}
+
+void MainWindow::updatePortModeUi()
+{
+    const bool directSerial = ui->portCombo->currentData(Qt::UserRole + 1).toBool();
+    ui->deviceGroup->setTitle(directSerial ? tr("CP210x 直接串列") : tr("LOLIN S2 無線裝置"));
+    ui->portLabel->setText(tr("USB COM："));
+    ui->roleCombo->setItemText(0, directSerial ? tr("A－直接串列端點")
+                                               : tr("A－無線基地台 (AP)"));
+    ui->roleCombo->setItemText(1, directSerial ? tr("B－直接串列端點")
+                                               : tr("B－連線端 (Station)"));
 }
 
 void MainWindow::chooseReceiveDirectory()
@@ -194,11 +214,13 @@ bool MainWindow::connectDevice(bool quiet)
             break;
         }
     }
+    const bool directSerial = ui->portCombo->currentData(Qt::UserRole + 1).toBool();
     if (!m_bridge->open(m_requestedPortName, ui->roleCombo->currentIndex() == 0,
-                        password))
+                        password, directSerial))
         return false;
     ui->connectButton->setText(tr("中斷"));
-    ui->statusLabel->setText(tr("USB 已連接，正在等待裝置回應…"));
+    ui->statusLabel->setText(directSerial ? tr("CP210x 已開啟，正在等待另一端…")
+                                          : tr("USB 已連接，正在等待裝置回應…"));
     ui->portCombo->setEnabled(false);
     ui->roleCombo->setEnabled(false);
     ui->passwordEdit->setEnabled(false);
